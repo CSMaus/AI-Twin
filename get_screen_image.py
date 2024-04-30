@@ -3,6 +3,9 @@ import numpy as np
 from PIL import Image
 import time
 import pytesseract
+import cv2
+from fuzzywuzzy import fuzz
+from fuzzywuzzy import process
 
 
 def capture_screen(region=None, monitor_index=1):
@@ -29,10 +32,9 @@ def are_images_equal(img1, img2):
 
 def find_overlap(prev_text, new_text):
     """Find the longest overlapping substring between the end of prev_text and the start of new_text."""
-    # Start from the full length of the shortest string and reduce until a match is found.
+
     max_overlap_len = min(len(prev_text), len(new_text))
     for i in range(max_overlap_len, 0, -1):
-        # Check if the end of prev_text overlaps with the start of new_text.
         if prev_text[-i:] == new_text[:i]:
             return new_text[i:]
     return new_text
@@ -72,6 +74,40 @@ def save_description_text(text, key):
         file.write(text)
 
 
+# define the function to define what chapter (key) is selected
+def define_chapters(img, lang='eng'):
+
+    text = pytesseract.image_to_string(img, lang=lang)  # lang="jpn" "rus" "eng"
+    chapters = []
+    chapter = ''
+    for i in range(len(text)-1):
+        if text[i] != '\n':
+            chapter += text[i]
+        elif text[i] == '\n':  #  and text[i+1] == '\n'
+            chapters.append(chapter)
+            chapter = ''
+
+    return chapters
+
+
+def find_fuzzy_overlap(prev_text, new_text, fuzziness=60):
+    """
+    Find the longest overlapping substring between the end of prev_text and the start of new_text,
+    allowing for some errors in the text.
+    """
+    max_overlap_len = min(len(prev_text), len(new_text))
+
+    for i in range(max_overlap_len, 0, -1):
+        end_of_prev = prev_text[-i:]
+        start_of_new = new_text[:i]
+        match_score = fuzz.ratio(end_of_prev, start_of_new)
+
+        if match_score > fuzziness:
+            return new_text[i:]
+
+    return new_text
+
+
 def main(isMultipleMonitors=True, timeout=1, dsOption=0):
     """
     isMultipleMonitors parameter for my personal settings, so adjust or use one monitor
@@ -82,6 +118,7 @@ def main(isMultipleMonitors=True, timeout=1, dsOption=0):
     """
     previous_img = None
     region = {'top': 250, 'left': 100, 'width': 200, 'height': 200}
+    region_key = {'top': 250, 'left': 100, 'width': 200, 'height': 200}
 
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     # img_path = 'details1_1_en.jpg'
@@ -100,6 +137,13 @@ def main(isMultipleMonitors=True, timeout=1, dsOption=0):
         region['width'] = width//3
         region['height'] = height - height//5
 
+        # to read only description
+        region_key['left'] = left
+        region_key['top'] = top + height // 10
+        region_key['width'] = width // 3
+        region_key['height'] = height - height // 5
+        region_key['left'] -= monitor_dims[0]['width']
+
         # TODO: define region where will be dialog part: for archived and new dialogs
 
         # for key, value in monitor_dims[0].items():
@@ -109,46 +153,54 @@ def main(isMultipleMonitors=True, timeout=1, dsOption=0):
         # region['left'] -= monitor_dims[0]['width']
     prev_text = ''
     prev_chapter = '_'
+    stimes = 0
     while True:
+        print(f"capturing screen {stimes} time...")
         current_img = capture_screen(region)
+        chapter_img = capture_screen(region_key)
+        stimes += 1
 
         if previous_img is not None and are_images_equal(current_img, previous_img):
             print("No change detected.")
         else:
             # print("Change detected, process the image.")
             # display the image
-            current_img.show()
+            # current_img.show()
             previous_img = current_img
-            text = pytesseract.image_to_string(current_img, lang='rus')  # lang="jpn" "rus" "eng"
+            text = pytesseract.image_to_string(current_img, lang='eng')  # lang="jpn" "rus" "eng"
             chapter, filtered_text = filter_description_text(text)
 
-            # first, need to save previous text
-            # if the key of the previous text is the same as current, then need to add new text to the previous text
-            # if there is common part between end of prev text and start of the new one, then remove it in new text
-            # if description key is different, then write previous text into file with the name of the key
+            chapers_list = define_chapters(chapter_img, 'eng')
 
-            # this idea with key is bad. Need to define it based on the selected section in the right side of the screen
+            if chapter != prev_chapter and chapter not in chapers_list:
+                chapter = prev_chapter
+            # define all chapters reading right side
+            # the current chapter is the words in 'text' var until first double '\n'
+            # then, if the current chapter is not as previous, and it's not in chapters list, then use prev chapter
 
             if len(prev_text) < 1:
                 prev_text = filtered_text
                 prev_chapter = chapter
             else:
-                if prev_chapter == chapter:
-                    # define the common text in the end of prev text and in the start of the new one and remove it in
-                    # new current filtered_text
-                    filtered_text = find_overlap(prev_text, filtered_text)
-                    prev_text += filtered_text
+                # if prev_chapter == chapter:
+                #     # define the common text in the end of prev text and in the start of the new one and remove it in
+                #     # new current filtered_text
+                filtered_text = find_fuzzy_overlap(prev_text, filtered_text)
+                prev_text += filtered_text
 
-                else:
-                    save_description_text(prev_text, prev_chapter)
-                    prev_text = filtered_text
-                    prev_chapter = chapter
+                # else:
+                #     save_description_text(prev_text, prev_chapter)
+                #     prev_text = filtered_text
+                #     prev_chapter = chapter
 
         # break
+        if stimes > 10:
+            save_description_text(prev_text, prev_chapter)
+            break
         time.sleep(timeout)
 
 
-main(timeout=2)
+main(timeout=3)
 
 
 # to create dataset need to define region where we take the image and recognize text
